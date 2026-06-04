@@ -1,0 +1,194 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>MarineVector</title>
+
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
+
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { font-family: sans-serif; background: #0a0a1a; color: #fff; }
+
+    #controls {
+      position: absolute;
+      top: 12px;
+      left: 50%;
+      transform: translateX(-50%);
+      z-index: 1000;
+      background: rgba(10,10,30,0.85);
+      border: 1px solid #334;
+      border-radius: 8px;
+      padding: 10px 16px;
+      display: flex;
+      gap: 10px;
+      align-items: center;
+    }
+
+    #controls select,
+    #controls button,
+    #controls label {
+      background: #1a1a2e;
+      color: #cde;
+      border: 1px solid #445;
+      border-radius: 4px;
+      padding: 4px 10px;
+      cursor: pointer;
+      font-size: 13px;
+    }
+
+    #controls button:hover { background: #2a2a4e; }
+
+    #brand {
+      font-weight: bold;
+      color: #8af;
+    }
+
+    #status {
+      position: absolute;
+      bottom: 12px;
+      left: 12px;
+      z-index: 1000;
+      background: rgba(10,10,30,0.75);
+      border-radius: 6px;
+      padding: 6px 12px;
+      font-size: 12px;
+      color: #8af;
+    }
+
+    #map { width: 100vw; height: 100vh; }
+
+    .ship-marker {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      line-height: 1;
+      text-shadow: 0 0 4px #000;
+    }
+
+    .ship-marker-cruise { font-size: 18px; }
+    .ship-marker-normal { font-size: 13px; }
+  </style>
+</head>
+<body>
+
+<div id="controls">
+  <span id="brand">⚓ MarineVector</span>
+
+  <select id="typeFilter" aria-label="Filter by vessel type">
+    <option value="">All Types</option>
+    <option value="passenger" selected>Passenger</option>
+    <option value="cargo">Cargo</option>
+    <option value="tanker">Tanker</option>
+    <option value="fishing">Fishing</option>
+    <option value="service">Service</option>
+    <option value="pleasure">Pleasure</option>
+  </select>
+
+  <label>
+    <input type="checkbox" id="cruiseOnly" /> Cruise Only
+  </label>
+
+  <button onclick="loadShips()">🔄 Refresh</button>
+</div>
+
+<div id="status">Loading...</div>
+<div id="map"></div>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+
+<script>
+  const map = L.map('map').setView([30, -20], 3);
+
+  L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
+    attribution: '&copy; OpenStreetMap &copy; CARTO',
+    maxZoom: 18,
+  }).addTo(map);
+
+  const markerLayer = L.layerGroup().addTo(map);
+
+  const typeColors = {
+    passenger: '#4fc3f7',
+    cargo:     '#81c784',
+    tanker:    '#e57373',
+    fishing:   '#ffb74d',
+    service:   '#ce93d8',
+    pleasure:  '#f06292',
+    other:     '#90a4ae',
+  };
+
+  function shipIcon(vesselType, isCruise, heading) {
+    const color = isCruise ? '#ffd700' : (typeColors[vesselType] || '#90a4ae');
+    const angle = (heading !== null && heading < 360) ? heading : 0;
+
+    if (isCruise) {
+      return L.divIcon({
+        className: '',
+        html: `<div class="ship-marker ship-marker-cruise" style="color:${color}; transform:rotate(${angle}deg);">🚢</div>`,
+        iconAnchor: [9, 9],
+      });
+    }
+
+    return L.divIcon({
+      className: '',
+      html: `<div class="ship-marker ship-marker-normal" style="color:${color}; transform:rotate(${angle}deg);">▲</div>`,
+      iconAnchor: [7, 7],
+    });
+  }
+
+  async function loadShips() {
+    const type = document.getElementById('typeFilter').value;
+    const cruiseOnly = document.getElementById('cruiseOnly').checked;
+    const limit = type ? 2000 : 500;
+
+    let url = `/ships/?limit=${limit}&offset=0`;
+    if (type) url += `&types=${type}`;
+    if (cruiseOnly) url += `&cruise_only=true`;
+
+    document.getElementById('status').textContent = 'Loading...';
+
+    try {
+      const res = await fetch(url);
+      const data = await res.json();
+
+      markerLayer.clearLayers();
+
+      for (const item of data.results) {
+        const { lat, lon, speed, course, heading } = item.position;
+        const ship = item.ship || {};
+        const name = ship.name?.trim() || 'Unknown';
+        const vtype = ship.vessel_type || 'other';
+        const isCruise = ship.is_cruise === true;
+        const displayHeading = (heading !== null && heading < 360) ? heading : course;
+
+        const marker = L.marker([lat, lon], {
+          icon: shipIcon(vtype, isCruise, displayHeading),
+        });
+
+        marker.bindPopup(`
+          <b>${name}</b><br/>
+          MMSI: ${ship.mmsi}<br/>
+          Type: ${vtype}${isCruise ? ' 🚢 Cruise' : ''}<br/>
+          Speed: ${speed ?? '—'} kn &nbsp; Course: ${course ?? '—'}°<br/>
+          Heading: ${heading ?? '—'}°
+        `);
+
+        markerLayer.addLayer(marker);
+      }
+
+      document.getElementById('status').textContent =
+        `Showing ${data.results.length} of ${data.total} vessels`;
+
+    } catch (err) {
+      document.getElementById('status').textContent = 'Error loading ships';
+      console.error(err);
+    }
+  }
+
+  loadShips();
+  setInterval(loadShips, 30000);
+</script>
+
+</body>
+</html>
