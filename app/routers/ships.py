@@ -12,7 +12,11 @@ router = APIRouter(prefix="/ships", tags=["ships"])
 def list_ships(
     db: Session = Depends(get_db),
     types: Annotated[list[str] | None, Query()] = None,
-    cruise_only: bool = False,  # NEW
+    cruise_only: bool = False,
+    min_lat: float | None = None,
+    max_lat: float | None = None,
+    min_lon: float | None = None,
+    max_lon: float | None = None,
 ):
     q = (
         db.query(models.ShipPositionLatest, models.Ship)
@@ -23,7 +27,16 @@ def list_ships(
         q = q.filter(models.Ship.vessel_type.in_(types))
 
     if cruise_only:
-        q = q.filter(models.Ship.is_cruise.is_(True))  # NEW
+        q = q.filter(models.Ship.is_cruise.is_(True))
+
+    if min_lat is not None:
+        q = q.filter(models.ShipPositionLatest.lat >= min_lat)
+    if max_lat is not None:
+        q = q.filter(models.ShipPositionLatest.lat <= max_lat)
+    if min_lon is not None:
+        q = q.filter(models.ShipPositionLatest.lon >= min_lon)
+    if max_lon is not None:
+        q = q.filter(models.ShipPositionLatest.lon <= max_lon)
 
     rows = q.all()
     result: list[schemas.ShipWithPosition] = []
