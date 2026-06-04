@@ -108,6 +108,9 @@
 
   const markerLayer = L.layerGroup().addTo(map);
 
+  // Keyed by MMSI for in-place patching
+  const markers = {};
+
   const typeColors = {
     passenger: '#4fc3f7',
     cargo:     '#81c784',
@@ -120,7 +123,7 @@
 
   function shipIcon(vesselType, isCruise, heading) {
     const color = isCruise ? '#ffd700' : (typeColors[vesselType] || '#90a4ae');
-    const angle = (heading !== null && heading < 360) ? heading : 0;
+    const angle = (heading !== null && heading !== undefined && heading < 360) ? heading : 0;
 
     if (isCruise) {
       return L.divIcon({
@@ -135,6 +138,32 @@
       html: `<div class="ship-marker ship-marker-normal" style="color:${color}; transform:rotate(${angle}deg);">▲</div>`,
       iconAnchor: [7, 7],
     });
+  }
+
+  // Apply a single ship update — used by both initial load and WebSocket
+  function applyShipUpdate(mmsi, lat, lon, speed, course, heading, name, vessel_type, is_cruise) {
+    const displayHeading = (heading !== null && heading !== undefined && heading < 360) ? heading : course;
+    const icon = shipIcon(vessel_type || 'other', is_cruise, displayHeading);
+    const popupHtml = `
+      <b>${name || 'Unknown'}</b><br/>
+      MMSI: ${mmsi}<br/>
+      Type: ${vessel_type || 'other'}${is_cruise ? ' 🚢 Cruise' : ''}<br/>
+      Speed: ${speed ?? '—'} kn &nbsp; Course: ${course ?? '—'}°<br/>
+      Heading: ${heading ?? '—'}°
+    `;
+
+    if (markers[mmsi]) {
+      // Patch existing marker in place — no flicker
+      markers[mmsi].setLatLng([lat, lon]);
+      markers[mmsi].setIcon(icon);
+      markers[mmsi].getPopup()?.setContent(popupHtml);
+    } else {
+      // New ship — create and register marker
+      const marker = L.marker([lat, lon], { icon });
+      marker.bindPopup(popupHtml);
+      markers[mmsi] = marker;
+      markerLayer.addLayer(marker);
+    }
   }
 
   async function loadShips() {
@@ -152,29 +181,17 @@
       const res = await fetch(url);
       const data = await res.json();
 
+      // Clear and repopulate on full reload
       markerLayer.clearLayers();
+      for (const key in markers) delete markers[key];
 
       for (const item of data.results) {
         const { lat, lon, speed, course, heading } = item.position;
         const ship = item.ship || {};
-        const name = ship.name?.trim() || 'Unknown';
-        const vtype = ship.vessel_type || 'other';
-        const isCruise = ship.is_cruise === true;
-        const displayHeading = (heading !== null && heading < 360) ? heading : course;
-
-        const marker = L.marker([lat, lon], {
-          icon: shipIcon(vtype, isCruise, displayHeading),
-        });
-
-        marker.bindPopup(`
-          <b>${name}</b><br/>
-          MMSI: ${ship.mmsi}<br/>
-          Type: ${vtype}${isCruise ? ' 🚢 Cruise' : ''}<br/>
-          Speed: ${speed ?? '—'} kn &nbsp; Course: ${course ?? '—'}°<br/>
-          Heading: ${heading ?? '—'}°
-        `);
-
-        markerLayer.addLayer(marker);
+        applyShipUpdate(
+          ship.mmsi, lat, lon, speed, course, heading,
+          ship.name, ship.vessel_type, ship.is_cruise === true
+        );
       }
 
       document.getElementById('status').textContent =
@@ -186,8 +203,41 @@
     }
   }
 
+  // WebSocket — receives live position pushes from backend
+  function connectWS() {
+    const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const ws = new WebSocket(`${protocol}//${location.host}/ws`);
+
+    ws.onopen = () => {
+      console.log('WebSocket connected');
+    };
+
+    ws.onmessage = (event) => {
+      const d = JSON.parse(event.data);
+      applyShipUpdate(
+        d.mmsi, d.lat, d.lon, d.speed, d.course, d.heading,
+        d.name, d.vessel_type, d.is_cruise
+      );
+      document.getElementById('status').textContent =
+        `Live ● Last update: ${new Date().toLocaleTimeString()}`;
+    };
+
+    ws.onclose = () => {
+      console.log('WebSocket disconnected — reconnecting in 5s');
+      setTimeout(connectWS, 5000);
+    };
+
+    ws.onerror = (err) => {
+      console.error('WebSocket error:', err);
+    };
+  }
+
+  // Initial load + fallback refresh every 2 minutes (catches missed ships during WS reconnect)
   loadShips();
-  setInterval(loadShips, 30000);
+  setInterval(loadShips, 120000);
+
+  // Start WebSocket live feed
+  connectWS();
 </script>
 
 </body>

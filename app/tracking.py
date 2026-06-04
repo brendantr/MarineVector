@@ -1,3 +1,4 @@
+import asyncio
 import logging
 from sqlalchemy.orm import Session
 from . import models
@@ -33,7 +34,6 @@ def handle_ais_message(raw_message: dict, db: Session) -> None:
             ship.vessel_type = ship_type_group_from_code(code)
 
         db.commit()
-        # Fall through: static messages usually don't have position, so return
         if msg_type != "PositionReport":
             return
 
@@ -46,7 +46,7 @@ def handle_ais_message(raw_message: dict, db: Session) -> None:
 
     mmsi = data["mmsi"]
 
-    # Upsert Ship record (if created only by position before static arrives)
+    # Upsert Ship record
     ship = db.query(models.Ship).filter_by(mmsi=mmsi).first()
     if not ship:
         ship = models.Ship(
@@ -58,7 +58,7 @@ def handle_ais_message(raw_message: dict, db: Session) -> None:
         if data.get("name") and ship.name != data["name"]:
             ship.name = data["name"]
 
-    # Upsert latest position (unchanged from your current logic)
+    # Upsert latest position
     existing_pos = db.query(models.ShipPositionLatest).filter_by(mmsi=mmsi).first()
     if not existing_pos:
         existing_pos = models.ShipPositionLatest(
@@ -78,3 +78,23 @@ def handle_ais_message(raw_message: dict, db: Session) -> None:
         existing_pos.heading = data.get("heading")
 
     db.commit()
+
+    # Broadcast live position update to all connected WebSocket clients
+    from .main import broadcast, connected_clients
+    if connected_clients:
+        update = {
+            "mmsi": mmsi,
+            "lat": existing_pos.lat,
+            "lon": existing_pos.lon,
+            "speed": existing_pos.speed,
+            "course": existing_pos.course,
+            "heading": existing_pos.heading,
+            "name": ship.name,
+            "vessel_type": ship.vessel_type,
+            "is_cruise": ship.is_cruise,
+        }
+        try:
+            loop = asyncio.get_event_loop()
+            loop.create_task(broadcast(update))
+        except RuntimeError:
+            pass  # No running event loop — safe to skip
