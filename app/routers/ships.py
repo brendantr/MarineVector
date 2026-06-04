@@ -8,7 +8,7 @@ from .. import models, schemas
 router = APIRouter(prefix="/ships", tags=["ships"])
 
 
-@router.get("/", response_model=list[schemas.ShipWithPosition])
+@router.get("/", response_model=schemas.PaginatedShips)
 def list_ships(
     db: Session = Depends(get_db),
     types: Annotated[list[str] | None, Query()] = None,
@@ -17,6 +17,8 @@ def list_ships(
     max_lat: float | None = None,
     min_lon: float | None = None,
     max_lon: float | None = None,
+    limit: int = 50,
+    offset: int = 0,
 ):
     q = (
         db.query(models.ShipPositionLatest, models.Ship)
@@ -38,18 +40,23 @@ def list_ships(
     if max_lon is not None:
         q = q.filter(models.ShipPositionLatest.lon <= max_lon)
 
-    rows = q.all()
-    result: list[schemas.ShipWithPosition] = []
+    total = q.count()
+    rows = q.offset(offset).limit(limit).all()
 
-    for pos, ship in rows:
-        result.append(
-            schemas.ShipWithPosition(
-                ship=schemas.ShipBase.model_validate(ship),
-                position=schemas.ShipPosition.model_validate(pos),
-            )
+    results = [
+        schemas.ShipWithPosition(
+            ship=schemas.ShipBase.model_validate(ship),
+            position=schemas.ShipPosition.model_validate(pos),
         )
+        for pos, ship in rows
+    ]
 
-    return result
+    return schemas.PaginatedShips(
+        total=total,
+        limit=limit,
+        offset=offset,
+        results=results,
+    )
 
 
 @router.get("/{mmsi}", response_model=schemas.ShipWithPosition)

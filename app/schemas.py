@@ -33,3 +33,9 @@ class ShipWithPosition(BaseModel):
 
     class Config:
         from_attributes = True
+
+class PaginatedShips(BaseModel):
+    total: int
+    limit: int
+    offset: int
+    results: list[ShipWithPosition]
